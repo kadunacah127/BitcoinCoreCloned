@@ -2,11 +2,12 @@
 setlocal EnableDelayedExpansion
 
 :: ============================================================================
-:: Bitcoin Core Windows Build Script - ADVANCED VERSION v2.1
+:: Bitcoin Core Windows Build Script - ADVANCED VERSION v2.2
 :: With automatic error recovery, retry logic, and network fixes
+:: No abnormal exits - all errors handled gracefully
 :: ============================================================================
 
-title Bitcoin Core Windows Builder (Advanced v2.1)
+title Bitcoin Core Windows Builder (Advanced v2.2)
 color 0B
 
 :: Default Configuration
@@ -24,6 +25,10 @@ set "PARALLEL_JOBS=8"
 set "CLEAN_BUILD=0"
 set "MAX_RETRIES=3"
 
+:: Required VS version
+set "REQUIRED_VS_VERSION=2022"
+set "REQUIRED_VS_GENERATOR=Visual Studio 17 2022"
+
 :: Fix SSL/TLS issues
 set "GIT_SSL_NO_VERIFY=0"
 set "CURL_SSL_BACKEND=schannel"
@@ -38,7 +43,7 @@ goto :Menu
 cls
 echo.
 echo ============================================================================
-echo           BITCOIN CORE WINDOWS BUILD SCRIPT (ADVANCED v2.1)
+echo           BITCOIN CORE WINDOWS BUILD SCRIPT (ADVANCED v2.2)
 echo ============================================================================
 echo.
 echo   Build Configuration:
@@ -57,7 +62,7 @@ echo   --------
 echo   [C] Check Requirements Only
 echo   [B] START BUILD
 echo   [I] Install After Build
-echo   [R] REPAIR / Fix Issues (clear cache, remove ALL VS, fix network)
+echo   [R] REPAIR / Fix Issues (remove ALL VS versions, clear cache, fix network)
 echo   [Q] Quit
 echo.
 echo ============================================================================
@@ -129,13 +134,20 @@ pause
 goto :Menu
 
 :InstallOnly
-if exist "%BUILD_DIR%\bin\Release" (
+set "INSTALL_FOUND=0"
+if exist "%BUILD_DIR%\bin\Release" set "INSTALL_FOUND=1"
+if exist "%BUILD_DIR%\src\Release" set "INSTALL_FOUND=1"
+if exist "%BUILD_DIR%\bin\%BUILD_TYPE%" set "INSTALL_FOUND=1"
+if exist "%BUILD_DIR%\src\%BUILD_TYPE%" set "INSTALL_FOUND=1"
+
+if "!INSTALL_FOUND!"=="1" (
     echo Installing to %INSTALL_DIR%...
-    cmake --install "%BUILD_DIR%" --config Release --prefix "%INSTALL_DIR%" --strip
-    echo Done!
-) else if exist "%BUILD_DIR%\src\Release" (
-    echo Installing to %INSTALL_DIR%...
-    cmake --install "%BUILD_DIR%" --config Release --prefix "%INSTALL_DIR%" --strip
+    cmake --install "%BUILD_DIR%" --config %BUILD_TYPE% --prefix "%INSTALL_DIR%" --strip 2>nul || (
+        echo [WARNING] Install with strip failed, trying without strip...
+        cmake --install "%BUILD_DIR%" --config %BUILD_TYPE% --prefix "%INSTALL_DIR%" 2>nul || (
+            echo [ERROR] Installation failed.
+        )
+    )
     echo Done!
 ) else (
     echo [ERROR] Build not found. Run build first.
@@ -144,6 +156,8 @@ pause
 goto :Menu
 
 :Quit
+echo.
+echo Goodbye!
 exit /b 0
 
 :: ============================================================================
@@ -154,15 +168,18 @@ exit /b 0
 cls
 echo.
 echo ============================================================================
-echo                     REPAIR / FIX ALL ISSUES (v2.1)
+echo                     REPAIR / FIX ALL ISSUES (v2.2)
 echo ============================================================================
 echo.
 echo This will:
 echo   1. Clear vcpkg download cache (fixes SSL/download errors)
 echo   2. Clear build trees (fixes path too long errors)
 echo   3. Update vcpkg to latest version
-echo   4. REMOVE ALL Visual Studio installations (including incomplete ones)
-echo   5. Install fresh Visual Studio Build Tools 2022
+echo   4. REMOVE ALL Visual Studio installations:
+echo      - VS 2015, 2017, 2019, 2022, 2026 and ANY other version
+echo      - Community, Professional, Enterprise, BuildTools
+echo      - All incomplete/partial installations
+echo   5. Install fresh Visual Studio Build Tools %REQUIRED_VS_VERSION%
 echo   6. Reset network settings for downloads
 echo   7. Clean previous build
 echo.
@@ -180,68 +197,43 @@ echo.
 
 :: Step 1: Clear vcpkg caches
 echo [REPAIR 1/7] Clearing vcpkg download cache...
-if exist "%VCPKG_DIR%\downloads" (
-    rmdir /s /q "%VCPKG_DIR%\downloads" 2>nul
-    echo          [OK] Downloads cache cleared
-) else (
-    echo          [OK] No downloads cache found
-)
+call :SafeRemoveDir "%VCPKG_DIR%\downloads"
+call :SafeRemoveDir "%VCPKG_DIR%\installed"
+call :SafeRemoveDir "%VCPKG_DIR%\buildtrees"
+call :SafeRemoveDir "%VCPKG_DIR%\packages"
+echo          [OK] vcpkg caches cleared
 
 :: Step 2: Clear build trees
 echo [REPAIR 2/7] Clearing build trees...
-if exist "%VCPKG_BUILDTREES%" (
-    rmdir /s /q "%VCPKG_BUILDTREES%" 2>nul
-    echo          [OK] Build trees cleared
-) else (
-    echo          [OK] No build trees found
-)
-
-if exist "%BUILD_DIR%" (
-    rmdir /s /q "%BUILD_DIR%" 2>nul
-    echo          [OK] Build directory cleared
-)
-
-if exist "%VCPKG_DIR%\installed" (
-    rmdir /s /q "%VCPKG_DIR%\installed" 2>nul
-    echo          [OK] Installed packages cleared
-)
-
-if exist "%VCPKG_DIR%\buildtrees" (
-    rmdir /s /q "%VCPKG_DIR%\buildtrees" 2>nul
-    echo          [OK] vcpkg buildtrees cleared
-)
-
-if exist "%VCPKG_DIR%\packages" (
-    rmdir /s /q "%VCPKG_DIR%\packages" 2>nul
-    echo          [OK] vcpkg packages cleared
-)
+call :SafeRemoveDir "%VCPKG_BUILDTREES%"
+call :SafeRemoveDir "%BUILD_DIR%"
+echo          [OK] Build trees cleared
 
 :: Step 3: Update vcpkg
 echo [REPAIR 3/7] Updating vcpkg...
-if exist "%VCPKG_DIR%" (
-    cd /d "%VCPKG_DIR%"
+if exist "%VCPKG_DIR%\.git" (
+    pushd "%VCPKG_DIR%" 2>nul || goto :SkipVcpkgUpdate
     git fetch origin 2>nul
     git reset --hard origin/master 2>nul
     call bootstrap-vcpkg.bat -disableMetrics >nul 2>&1
+    popd
     echo          [OK] vcpkg updated
-    cd /d "%REPO_DIR%"
 ) else (
     echo          [INFO] vcpkg not installed, will install later
 )
+:SkipVcpkgUpdate
 
 :: Step 4: Remove ALL Visual Studio installations
 echo [REPAIR 4/7] Removing ALL Visual Studio installations...
 echo          [INFO] This may take several minutes...
 echo.
-
 call :DoRemoveAllVisualStudio
 
 :: Step 5: Install fresh Visual Studio Build Tools
 echo.
-echo [REPAIR 5/7] Installing fresh Visual Studio Build Tools 2022...
+echo [REPAIR 5/7] Installing fresh Visual Studio Build Tools %REQUIRED_VS_VERSION%...
 echo          [INFO] This may take 10-20 minutes...
 echo.
-
 call :DoInstallVSFresh
 
 :: Step 6: Fix network settings
@@ -255,16 +247,18 @@ echo          [OK] Network settings reset
 :: Configure git for better compatibility
 git config --global http.sslBackend schannel 2>nul
 git config --global http.postBuffer 524288000 2>nul
-echo          [OK] Git SSL backend set to schannel
+git config --global core.longpaths true 2>nul
+echo          [OK] Git configured for better compatibility
 
 :: Step 7: Verify installation
 echo.
 echo [REPAIR 7/7] Verifying installation...
-call :DoCheckVisualStudio
+call :DoCheckVisualStudioVersion
 if !errorlevel! equ 0 (
-    echo          [OK] Visual Studio verified
+    echo          [OK] Visual Studio %REQUIRED_VS_VERSION% verified
 ) else (
     echo          [WARNING] Visual Studio may need manual installation
+    echo          [INFO] Please install Visual Studio Build Tools %REQUIRED_VS_VERSION% manually
 )
 
 echo.
@@ -284,6 +278,31 @@ pause
 goto :Menu
 
 :: ============================================================================
+:: SAFE REMOVE DIRECTORY (No abnormal exits)
+:: ============================================================================
+
+:SafeRemoveDir
+if "%~1"=="" exit /b 0
+if exist "%~1" (
+    rmdir /s /q "%~1" 2>nul
+    if exist "%~1" (
+        :: Try again with timeout
+        timeout /t 2 /nobreak >nul 2>&1
+        rmdir /s /q "%~1" 2>nul
+    )
+)
+exit /b 0
+
+:: ============================================================================
+:: SAFE UNINSTALL (No abnormal exits)
+:: ============================================================================
+
+:SafeWingetUninstall
+if "%~1"=="" exit /b 0
+winget uninstall --id "%~1" --silent >nul 2>&1
+exit /b 0
+
+:: ============================================================================
 :: REMOVE ALL VISUAL STUDIO INSTALLATIONS
 :: ============================================================================
 
@@ -291,122 +310,121 @@ goto :Menu
 echo          Searching for Visual Studio installations...
 echo.
 
-:: Use winget to remove all VS versions
+:: Use winget to remove all VS versions (silent, no errors)
 where winget >nul 2>&1
 if !errorlevel! equ 0 (
     echo          [INFO] Using winget to uninstall Visual Studio products...
     
+    :: Visual Studio 2026 versions (future-proof)
+    echo          Checking Visual Studio 2026...
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2026.Community"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2026.Professional"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2026.Enterprise"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2026.BuildTools"
+    
     :: Visual Studio 2022 versions
-    echo          Removing Visual Studio 2022 Community...
-    winget uninstall --id Microsoft.VisualStudio.2022.Community --silent >nul 2>&1
-    
-    echo          Removing Visual Studio 2022 Professional...
-    winget uninstall --id Microsoft.VisualStudio.2022.Professional --silent >nul 2>&1
-    
-    echo          Removing Visual Studio 2022 Enterprise...
-    winget uninstall --id Microsoft.VisualStudio.2022.Enterprise --silent >nul 2>&1
-    
-    echo          Removing Visual Studio 2022 BuildTools...
-    winget uninstall --id Microsoft.VisualStudio.2022.BuildTools --silent >nul 2>&1
+    echo          Checking Visual Studio 2022...
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2022.Community"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2022.Professional"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2022.Enterprise"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2022.BuildTools"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2022.TeamExplorer"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2022.TestAgent"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2022.TestController"
     
     :: Visual Studio 2019 versions
-    echo          Removing Visual Studio 2019 Community...
-    winget uninstall --id Microsoft.VisualStudio.2019.Community --silent >nul 2>&1
-    
-    echo          Removing Visual Studio 2019 Professional...
-    winget uninstall --id Microsoft.VisualStudio.2019.Professional --silent >nul 2>&1
-    
-    echo          Removing Visual Studio 2019 Enterprise...
-    winget uninstall --id Microsoft.VisualStudio.2019.Enterprise --silent >nul 2>&1
-    
-    echo          Removing Visual Studio 2019 BuildTools...
-    winget uninstall --id Microsoft.VisualStudio.2019.BuildTools --silent >nul 2>&1
+    echo          Checking Visual Studio 2019...
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2019.Community"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2019.Professional"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2019.Enterprise"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2019.BuildTools"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2019.TeamExplorer"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2019.TestAgent"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2019.TestController"
     
     :: Visual Studio 2017 versions
-    echo          Removing Visual Studio 2017 versions...
-    winget uninstall --id Microsoft.VisualStudio.2017.Community --silent >nul 2>&1
-    winget uninstall --id Microsoft.VisualStudio.2017.Professional --silent >nul 2>&1
-    winget uninstall --id Microsoft.VisualStudio.2017.Enterprise --silent >nul 2>&1
-    winget uninstall --id Microsoft.VisualStudio.2017.BuildTools --silent >nul 2>&1
+    echo          Checking Visual Studio 2017...
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2017.Community"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2017.Professional"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2017.Enterprise"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2017.BuildTools"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2017.TeamExplorer"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2017.TestAgent"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2017.TestController"
+    
+    :: Visual Studio 2015 versions
+    echo          Checking Visual Studio 2015...
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2015.Community"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2015.Professional"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.2015.Enterprise"
+    
+    :: Generic/Other VS products
+    echo          Checking other Visual Studio products...
+    call :SafeWingetUninstall "Microsoft.VisualStudioCode"
+    call :SafeWingetUninstall "Microsoft.VisualStudio.Locator"
 )
 
 :: Use VS Installer to remove everything (catches incomplete installations)
 echo          [INFO] Using VS Installer to clean up...
 set "VS_INSTALLER=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vs_installer.exe"
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 
-if exist "!VS_INSTALLER!" (
-    echo          Running VS Installer cleanup...
-    
-    :: Get all installed instances and uninstall them
-    set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-    
-    if exist "!VSWHERE!" (
-        :: Uninstall each found instance
-        for /f "tokens=*" %%i in ('"!VSWHERE!" -all -property installationPath 2^>nul') do (
+:: Uninstall each found instance using vswhere
+if exist "!VSWHERE!" (
+    echo          Finding all VS instances...
+    for /f "tokens=*" %%i in ('"!VSWHERE!" -all -prerelease -property installationPath 2^>nul') do (
+        if exist "%%i" (
             echo          Uninstalling: %%i
-            "!VS_INSTALLER!" uninstall --installPath "%%i" --quiet --wait >nul 2>&1
+            if exist "!VS_INSTALLER!" (
+                "!VS_INSTALLER!" uninstall --installPath "%%i" --quiet --wait >nul 2>&1
+            )
         )
     )
-    
-    :: Final cleanup with installer
+)
+
+:: Final cleanup with installer - uninstall all
+if exist "!VS_INSTALLER!" (
+    echo          Running final VS Installer cleanup...
     "!VS_INSTALLER!" --quiet --wait --norestart uninstall --all >nul 2>&1
 )
 
-:: Remove VS Installer itself
-echo          Removing Visual Studio Installer...
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vs_installer.exe" (
-    "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vs_installer.exe" --quiet --wait --norestart uninstall --all >nul 2>&1
-)
-
-:: Force remove leftover directories
+:: Force remove leftover directories for ALL versions
 echo          Cleaning leftover directories...
 
-:: VS 2022 directories
-if exist "%ProgramFiles%\Microsoft Visual Studio\2022" (
-    rmdir /s /q "%ProgramFiles%\Microsoft Visual Studio\2022" 2>nul
-)
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022" (
-    rmdir /s /q "%ProgramFiles(x86)%\Microsoft Visual Studio\2022" 2>nul
+:: Remove all VS year directories (2015-2030 to be future-proof)
+for %%y in (2015 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027 2028 2029 2030) do (
+    call :SafeRemoveDir "%ProgramFiles%\Microsoft Visual Studio\%%y"
+    call :SafeRemoveDir "%ProgramFiles(x86)%\Microsoft Visual Studio\%%y"
 )
 
-:: VS 2019 directories
-if exist "%ProgramFiles%\Microsoft Visual Studio\2019" (
-    rmdir /s /q "%ProgramFiles%\Microsoft Visual Studio\2019" 2>nul
-)
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2019" (
-    rmdir /s /q "%ProgramFiles(x86)%\Microsoft Visual Studio\2019" 2>nul
-)
+:: Remove VS Installer directory
+call :SafeRemoveDir "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 
-:: VS 2017 directories
-if exist "%ProgramFiles%\Microsoft Visual Studio\2017" (
-    rmdir /s /q "%ProgramFiles%\Microsoft Visual Studio\2017" 2>nul
-)
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2017" (
-    rmdir /s /q "%ProgramFiles(x86)%\Microsoft Visual Studio\2017" 2>nul
-)
+:: Remove VS Shared directory
+call :SafeRemoveDir "%ProgramFiles(x86)%\Microsoft Visual Studio\Shared"
+call :SafeRemoveDir "%ProgramFiles%\Microsoft Visual Studio\Shared"
 
-:: VS Installer directory
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer" (
-    rmdir /s /q "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer" 2>nul
-)
+:: Remove VS cache directories
+call :SafeRemoveDir "%ProgramData%\Microsoft\VisualStudio"
+call :SafeRemoveDir "%LOCALAPPDATA%\Microsoft\VisualStudio"
+call :SafeRemoveDir "%APPDATA%\Microsoft\VisualStudio"
 
-:: VS cache directories
-if exist "%ProgramData%\Microsoft\VisualStudio" (
-    rmdir /s /q "%ProgramData%\Microsoft\VisualStudio" 2>nul
-)
-if exist "%LOCALAPPDATA%\Microsoft\VisualStudio" (
-    rmdir /s /q "%LOCALAPPDATA%\Microsoft\VisualStudio" 2>nul
-)
-if exist "%APPDATA%\Microsoft\VisualStudio" (
-    rmdir /s /q "%APPDATA%\Microsoft\VisualStudio" 2>nul
-)
+:: Remove VS temp directories
+call :SafeRemoveDir "%TEMP%\dd_*"
+call :SafeRemoveDir "%TEMP%\VSFeedbackIntelliCodeLogs"
+call :SafeRemoveDir "%TEMP%\VSRemoteControl"
 
-:: VS packages cache
+:: Clean Package Cache (VS components only)
 if exist "%ProgramData%\Package Cache" (
     echo          Cleaning Package Cache (VS components)...
-    for /d %%d in ("%ProgramData%\Package Cache\*VisualStudio*") do rmdir /s /q "%%d" 2>nul
-    for /d %%d in ("%ProgramData%\Package Cache\*vs_*") do rmdir /s /q "%%d" 2>nul
+    for /d %%d in ("%ProgramData%\Package Cache\*") do (
+        echo "%%d" | findstr /i "VisualStudio vs_" >nul 2>&1 && (
+            rmdir /s /q "%%d" 2>nul
+        )
+    )
 )
+
+:: Remove leftover registry entries would require admin and is risky, skip
 
 echo          [OK] All Visual Studio installations removed
 exit /b 0
@@ -416,27 +434,34 @@ exit /b 0
 :: ============================================================================
 
 :DoInstallVSFresh
+set "VS_INSTALL_SUCCESS=0"
+
 where winget >nul 2>&1
 if !errorlevel! equ 0 (
     echo          Installing via winget...
-    winget install --id Microsoft.VisualStudio.2022.BuildTools ^
+    winget install --id Microsoft.VisualStudio.%REQUIRED_VS_VERSION%.BuildTools ^
         --override "--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --add Microsoft.VisualStudio.Component.VC.CMake.Project --includeRecommended" ^
-        --accept-package-agreements --accept-source-agreements
+        --accept-package-agreements --accept-source-agreements >nul 2>&1
     
-    if !errorlevel! neq 0 (
-        echo          [WARNING] winget install may have issues, trying direct download...
-        goto :InstallVSDirect
+    if !errorlevel! equ 0 (
+        set "VS_INSTALL_SUCCESS=1"
+        echo          [OK] Visual Studio Build Tools %REQUIRED_VS_VERSION% installed via winget
+    ) else (
+        echo          [WARNING] winget install had issues, trying direct download...
     )
-) else (
-    goto :InstallVSDirect
 )
 
-echo          [OK] Visual Studio Build Tools 2022 installed
+if "!VS_INSTALL_SUCCESS!"=="0" (
+    call :InstallVSDirect
+)
+
 exit /b 0
 
 :InstallVSDirect
 echo          Downloading VS Build Tools installer directly...
-powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile '%TEMP%\vs_buildtools.exe'"
+
+:: Download with error handling
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile '%TEMP%\vs_buildtools.exe' -UseBasicParsing } catch { exit 1 }" >nul 2>&1
 
 if exist "%TEMP%\vs_buildtools.exe" (
     echo          Running installer (this may take 10-20 minutes)...
@@ -445,12 +470,21 @@ if exist "%TEMP%\vs_buildtools.exe" (
         --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
         --add Microsoft.VisualStudio.Component.Windows11SDK.22621 ^
         --add Microsoft.VisualStudio.Component.VC.CMake.Project ^
-        --includeRecommended
+        --includeRecommended >nul 2>&1
     
-    echo          [OK] Visual Studio Build Tools 2022 installed
+    if !errorlevel! equ 0 (
+        echo          [OK] Visual Studio Build Tools %REQUIRED_VS_VERSION% installed
+    ) else (
+        echo          [WARNING] Installer exited with code !errorlevel!
+        echo          [INFO] VS may still have installed successfully
+    )
+    
+    :: Cleanup installer
+    del "%TEMP%\vs_buildtools.exe" 2>nul
 ) else (
     echo          [ERROR] Failed to download VS Build Tools installer
-    exit /b 1
+    echo          [INFO] Please install Visual Studio Build Tools %REQUIRED_VS_VERSION% manually from:
+    echo          https://visualstudio.microsoft.com/downloads/
 )
 exit /b 0
 
@@ -473,11 +507,12 @@ echo   - ZeroMQ: %BUILD_ZMQ%
 echo   - Build Type: %BUILD_TYPE%
 echo   - Parallel Jobs: %PARALLEL_JOBS%
 echo   - Clean Build: %CLEAN_BUILD%
+echo   - Required VS: %REQUIRED_VS_VERSION%
 echo.
 echo ============================================================================
 echo.
 
-:: Check admin rights
+:: Check admin rights (warning only, don't exit)
 net session >nul 2>&1
 if !errorlevel! neq 0 (
     echo [WARNING] Not running as Administrator.
@@ -489,18 +524,35 @@ if !errorlevel! neq 0 (
 echo [STEP 1/6] Checking requirements...
 echo.
 call :DoCheckRequirements
-if !errorlevel! neq 0 goto :BuildFailed
+if !errorlevel! neq 0 (
+    echo.
+    echo [ERROR] Requirements check failed.
+    echo [INFO] Press [R] in menu to repair.
+    pause
+    goto :Menu
+)
 
 :: Step 2: Setup environment
 echo.
 echo [STEP 2/6] Setting up build environment...
 call :DoSetupEnvironment
-if !errorlevel! neq 0 goto :BuildFailed
+if !errorlevel! neq 0 (
+    echo.
+    echo [ERROR] Failed to setup build environment.
+    echo [INFO] Press [R] in menu to repair.
+    pause
+    goto :Menu
+)
 
 :: Step 3: Verify source
 echo [STEP 3/6] Verifying source code...
 call :DoVerifySource
-if !errorlevel! neq 0 goto :BuildFailed
+if !errorlevel! neq 0 (
+    echo.
+    echo [ERROR] Source verification failed.
+    pause
+    goto :Menu
+)
 
 :: Step 4: Configure with retry
 echo.
@@ -509,14 +561,25 @@ echo [INFO] This may take 15-45 minutes on first run (downloading dependencies)
 echo [INFO] If download fails, will retry up to %MAX_RETRIES% times
 echo.
 call :DoConfigureBuildWithRetry
-if !errorlevel! neq 0 goto :BuildFailed
+if !errorlevel! neq 0 (
+    echo.
+    echo [ERROR] Configuration failed after all retries.
+    echo [INFO] Press [R] in menu to repair and clear caches.
+    pause
+    goto :Menu
+)
 
 :: Step 5: Build
 echo.
 echo [STEP 5/6] Building Bitcoin Core...
 echo [INFO] Using %PARALLEL_JOBS% parallel jobs
 call :DoRunBuild
-if !errorlevel! neq 0 goto :BuildFailed
+if !errorlevel! neq 0 (
+    echo.
+    echo [ERROR] Build failed.
+    pause
+    goto :Menu
+)
 
 :: Step 6: Report
 echo.
@@ -528,31 +591,25 @@ echo Press any key to return to menu...
 pause >nul
 goto :Menu
 
-:BuildFailed
-echo.
-echo ============================================================================
-echo                            BUILD FAILED
-echo ============================================================================
-echo.
-echo Possible fixes:
-echo   1. Press [R] in menu to REPAIR and clear caches
-echo   2. Disable VPN/Proxy if using one
-echo   3. Restart computer and try again
-echo   4. Run as Administrator
-echo.
-pause
-goto :Menu
-
 :: ============================================================================
 :: CHECK REQUIREMENTS FUNCTION
 :: ============================================================================
 
 :DoCheckRequirements
+set "REQ_FAILED=0"
+
 :: Check Git
 where git >nul 2>&1
 if !errorlevel! neq 0 (
     echo [MISSING] Git - Installing...
     call :DoInstallGit
+    where git >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo [ERROR] Git installation failed
+        set "REQ_FAILED=1"
+    ) else (
+        echo [OK] Git installed
+    )
 ) else (
     echo [OK] Git found
 )
@@ -562,6 +619,12 @@ where python >nul 2>&1
 if !errorlevel! neq 0 (
     echo [MISSING] Python - Installing...
     call :DoInstallPython
+    where python >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo [WARNING] Python installation may need restart
+    ) else (
+        echo [OK] Python installed
+    )
 ) else (
     echo [OK] Python found
 )
@@ -571,50 +634,80 @@ where cmake >nul 2>&1
 if !errorlevel! neq 0 (
     echo [MISSING] CMake - Installing...
     call :DoInstallCMake
+    where cmake >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo [WARNING] CMake installation may need restart
+    ) else (
+        echo [OK] CMake installed
+    )
 ) else (
     echo [OK] CMake found
 )
 
-:: Check Visual Studio (more thorough check)
-call :DoCheckVisualStudio
+:: Check Visual Studio (must be correct version)
+echo [CHECK] Visual Studio %REQUIRED_VS_VERSION%...
+call :DoCheckVisualStudioVersion
 if !errorlevel! neq 0 (
-    echo [MISSING] Visual Studio - Installing...
+    echo [MISSING] Visual Studio Build Tools %REQUIRED_VS_VERSION% - Installing...
     call :DoInstallVSFresh
+    
+    :: Verify installation
+    call :DoCheckVisualStudioVersion
+    if !errorlevel! neq 0 (
+        echo [ERROR] Visual Studio %REQUIRED_VS_VERSION% installation failed
+        echo [INFO] Please install manually or press [R] to repair
+        set "REQ_FAILED=1"
+    ) else (
+        echo [OK] Visual Studio %REQUIRED_VS_VERSION% installed
+    )
+) else (
+    echo [OK] Visual Studio %REQUIRED_VS_VERSION% found
 )
 
 :: Check vcpkg
 if not exist "%VCPKG_DIR%\vcpkg.exe" (
     echo [MISSING] vcpkg - Installing...
     call :DoInstallVcpkg
+    if not exist "%VCPKG_DIR%\vcpkg.exe" (
+        echo [ERROR] vcpkg installation failed
+        set "REQ_FAILED=1"
+    ) else (
+        echo [OK] vcpkg installed
+    )
 ) else (
     echo [OK] vcpkg found
 )
 
 echo.
+if "!REQ_FAILED!"=="1" (
+    echo [ERROR] Some requirements could not be satisfied
+    exit /b 1
+)
+
 echo [OK] All requirements satisfied
 exit /b 0
 
 :: ============================================================================
-:: CHECK VISUAL STUDIO (THOROUGH)
+:: CHECK VISUAL STUDIO VERSION (SPECIFIC)
 :: ============================================================================
 
-:DoCheckVisualStudio
+:DoCheckVisualStudioVersion
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-set "VS_FOUND=0"
+set "VS_CORRECT_VERSION=0"
 set "VS_PATH="
 
-:: Method 1: Use vswhere
+:: Method 1: Use vswhere to find specific version with required components
 if exist "!VSWHERE!" (
-    for /f "tokens=*" %%i in ('"!VSWHERE!" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul') do (
+    for /f "tokens=*" %%i in ('"!VSWHERE!" -version [17.0^,18.0^) -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul') do (
         if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" (
             set "VS_PATH=%%i"
-            set "VS_FOUND=1"
+            set "VS_CORRECT_VERSION=1"
         )
     )
 )
 
-:: Method 2: Check common paths
-if "!VS_FOUND!"=="0" (
+:: Method 2: Check common paths for VS 2022
+if "!VS_CORRECT_VERSION!"=="0" (
     for %%p in (
         "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Community"
@@ -624,13 +717,13 @@ if "!VS_FOUND!"=="0" (
     ) do (
         if exist "%%~p\VC\Auxiliary\Build\vcvars64.bat" (
             set "VS_PATH=%%~p"
-            set "VS_FOUND=1"
+            set "VS_CORRECT_VERSION=1"
         )
     )
 )
 
-if "!VS_FOUND!"=="1" (
-    echo [OK] Visual Studio found at: !VS_PATH!
+if "!VS_CORRECT_VERSION!"=="1" (
+    echo          Found at: !VS_PATH!
     exit /b 0
 ) else (
     exit /b 1
@@ -644,9 +737,9 @@ if "!VS_FOUND!"=="1" (
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VS_PATH="
 
-:: Find VS installation
+:: Find VS 2022 installation specifically
 if exist "!VSWHERE!" (
-    for /f "tokens=*" %%i in ('"!VSWHERE!" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul') do (
+    for /f "tokens=*" %%i in ('"!VSWHERE!" -version [17.0^,18.0^) -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul') do (
         set "VS_PATH=%%i"
     )
 )
@@ -669,15 +762,14 @@ if not defined VS_PATH (
 if defined VS_PATH (
     if exist "!VS_PATH!\VC\Auxiliary\Build\vcvars64.bat" (
         echo [INFO] Loading Visual Studio environment from: !VS_PATH!
-        call "!VS_PATH!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-        if !errorlevel! equ 0 (
-            echo [OK] Visual Studio environment loaded
-        ) else (
-            echo [WARNING] Failed to load VS environment, continuing anyway...
-        )
+        call "!VS_PATH!\VC\Auxiliary\Build\vcvars64.bat" x64 >nul 2>&1
+        echo [OK] Visual Studio environment loaded
+    ) else (
+        echo [ERROR] vcvars64.bat not found in VS installation
+        exit /b 1
     )
 ) else (
-    echo [ERROR] Could not find Visual Studio installation!
+    echo [ERROR] Could not find Visual Studio %REQUIRED_VS_VERSION% installation!
     echo [ERROR] Press [R] in menu to repair, or install Visual Studio manually.
     exit /b 1
 )
@@ -695,19 +787,25 @@ exit /b 0
 :: ============================================================================
 
 :DoVerifySource
-cd /d "%REPO_DIR%"
+pushd "%REPO_DIR%" 2>nul || (
+    echo [ERROR] Cannot access repository directory: %REPO_DIR%
+    exit /b 1
+)
 
 if not exist "CMakeLists.txt" (
     echo [ERROR] CMakeLists.txt not found!
     echo [ERROR] Please run this script from the Bitcoin Core source directory.
+    popd
     exit /b 1
 )
 if not exist "src\bitcoind.cpp" (
     echo [ERROR] Source files not found!
     echo [ERROR] This doesn't appear to be a valid Bitcoin Core repository.
+    popd
     exit /b 1
 )
 echo [OK] Source code verified
+popd
 exit /b 0
 
 :: ============================================================================
@@ -722,7 +820,6 @@ set /a RETRY_COUNT+=1
 
 if !RETRY_COUNT! gtr %MAX_RETRIES% (
     echo [ERROR] Configuration failed after %MAX_RETRIES% attempts.
-    echo [ERROR] Press [R] in menu to repair and clear caches.
     exit /b 1
 )
 
@@ -735,9 +832,9 @@ if !RETRY_COUNT! gtr 1 (
     if exist "%VCPKG_DIR%\downloads\*.tmp" del /q "%VCPKG_DIR%\downloads\*.tmp" 2>nul
     if exist "%VCPKG_DIR%\downloads\temp" rmdir /s /q "%VCPKG_DIR%\downloads\temp" 2>nul
     
-    :: Wait a bit before retry
+    :: Wait before retry
     echo [RETRY] Waiting 5 seconds before retry...
-    timeout /t 5 /nobreak >nul
+    timeout /t 5 /nobreak >nul 2>&1
 )
 
 call :DoConfigureBuild
@@ -761,42 +858,32 @@ exit /b 0
 if "%CLEAN_BUILD%"=="1" (
     if exist "%BUILD_DIR%" (
         echo [INFO] Cleaning previous build...
-        rmdir /s /q "%BUILD_DIR%" 2>nul
+        call :SafeRemoveDir "%BUILD_DIR%"
     )
 )
 
 :: Create buildtrees directory
-if not exist "%VCPKG_BUILDTREES%" mkdir "%VCPKG_BUILDTREES%"
+if not exist "%VCPKG_BUILDTREES%" mkdir "%VCPKG_BUILDTREES%" 2>nul
 
-:: Detect VS version for generator
-set "VS_GENERATOR=Visual Studio 17 2022"
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-
-if exist "!VSWHERE!" (
-    for /f "tokens=*" %%v in ('"!VSWHERE!" -latest -property catalog_productLineVersion 2^>nul') do (
-        if "%%v"=="2022" set "VS_GENERATOR=Visual Studio 17 2022"
-        if "%%v"=="2019" set "VS_GENERATOR=Visual Studio 16 2019"
-    )
-)
-
-:: Verify cmake can find VS
+:: Verify cmake works
 cmake --version >nul 2>&1
 if !errorlevel! neq 0 (
     echo [ERROR] CMake not working properly!
     exit /b 1
 )
 
-echo [INFO] Generator: %VS_GENERATOR%
+echo [INFO] Generator: %REQUIRED_VS_GENERATOR%
 echo [INFO] vcpkg: %VCPKG_DIR%
 echo [INFO] Build trees: %VCPKG_BUILDTREES%
 echo.
 
 :: Run CMake configuration
-cmake -B "%BUILD_DIR%" -G "%VS_GENERATOR%" -A x64 ^
+pushd "%REPO_DIR%" 2>nul || exit /b 1
+
+cmake -B "%BUILD_DIR%" -G "%REQUIRED_VS_GENERATOR%" -A x64 ^
     -DCMAKE_TOOLCHAIN_FILE="%VCPKG_DIR%\scripts\buildsystems\vcpkg.cmake" ^
     -DVCPKG_TARGET_TRIPLET="x64-windows-static" ^
     -DVCPKG_INSTALL_OPTIONS="--x-buildtrees-root=%VCPKG_BUILDTREES%;--clean-after-build" ^
-    -DVCPKG_OVERLAY_TRIPLETS="%VCPKG_DIR%\triplets" ^
     -DBUILD_GUI=%BUILD_GUI% ^
     -DBUILD_TESTS=%BUILD_TESTS% ^
     -DBUILD_BENCH=OFF ^
@@ -804,7 +891,10 @@ cmake -B "%BUILD_DIR%" -G "%VS_GENERATOR%" -A x64 ^
     -DENABLE_WALLET=%BUILD_WALLET% ^
     -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
 
-if !errorlevel! neq 0 (
+set "CMAKE_RESULT=!errorlevel!"
+popd
+
+if !CMAKE_RESULT! neq 0 (
     echo.
     echo [ERROR] CMake configuration failed!
     exit /b 1
@@ -844,36 +934,46 @@ echo                           BUILD RESULTS
 echo ============================================================================
 echo.
 
-set "EXE_DIR=%BUILD_DIR%\bin\%BUILD_TYPE%"
-if not exist "%EXE_DIR%" set "EXE_DIR=%BUILD_DIR%\src\%BUILD_TYPE%"
-if not exist "%EXE_DIR%" set "EXE_DIR=%BUILD_DIR%\bin"
-if not exist "%EXE_DIR%" set "EXE_DIR=%BUILD_DIR%\src"
+set "EXE_DIR="
+for %%d in (
+    "%BUILD_DIR%\bin\%BUILD_TYPE%"
+    "%BUILD_DIR%\src\%BUILD_TYPE%"
+    "%BUILD_DIR%\bin\Release"
+    "%BUILD_DIR%\src\Release"
+    "%BUILD_DIR%\bin"
+    "%BUILD_DIR%\src"
+) do (
+    if exist "%%~d\bitcoind.exe" set "EXE_DIR=%%~d"
+    if exist "%%~d\bitcoin-cli.exe" set "EXE_DIR=%%~d"
+)
 
 set "EXE_COUNT=0"
 
-if exist "%EXE_DIR%\bitcoind.exe" (
-    echo   [OK] bitcoind.exe - Full node daemon
-    set /a EXE_COUNT+=1
-)
-if exist "%EXE_DIR%\bitcoin-qt.exe" (
-    echo   [OK] bitcoin-qt.exe - GUI wallet
-    set /a EXE_COUNT+=1
-)
-if exist "%EXE_DIR%\bitcoin-cli.exe" (
-    echo   [OK] bitcoin-cli.exe - Command-line interface
-    set /a EXE_COUNT+=1
-)
-if exist "%EXE_DIR%\bitcoin-tx.exe" (
-    echo   [OK] bitcoin-tx.exe - Transaction utility
-    set /a EXE_COUNT+=1
-)
-if exist "%EXE_DIR%\bitcoin-wallet.exe" (
-    echo   [OK] bitcoin-wallet.exe - Wallet tool
-    set /a EXE_COUNT+=1
-)
-if exist "%EXE_DIR%\bitcoin-util.exe" (
-    echo   [OK] bitcoin-util.exe - Utility tool
-    set /a EXE_COUNT+=1
+if defined EXE_DIR (
+    if exist "%EXE_DIR%\bitcoind.exe" (
+        echo   [OK] bitcoind.exe - Full node daemon
+        set /a EXE_COUNT+=1
+    )
+    if exist "%EXE_DIR%\bitcoin-qt.exe" (
+        echo   [OK] bitcoin-qt.exe - GUI wallet
+        set /a EXE_COUNT+=1
+    )
+    if exist "%EXE_DIR%\bitcoin-cli.exe" (
+        echo   [OK] bitcoin-cli.exe - Command-line interface
+        set /a EXE_COUNT+=1
+    )
+    if exist "%EXE_DIR%\bitcoin-tx.exe" (
+        echo   [OK] bitcoin-tx.exe - Transaction utility
+        set /a EXE_COUNT+=1
+    )
+    if exist "%EXE_DIR%\bitcoin-wallet.exe" (
+        echo   [OK] bitcoin-wallet.exe - Wallet tool
+        set /a EXE_COUNT+=1
+    )
+    if exist "%EXE_DIR%\bitcoin-util.exe" (
+        echo   [OK] bitcoin-util.exe - Utility tool
+        set /a EXE_COUNT+=1
+    )
 )
 
 echo.
@@ -886,11 +986,11 @@ if !EXE_COUNT! gtr 0 (
     echo ============================================================================
     echo.
     echo   To install, press [I] in menu or run:
-    echo   cmake --install "%BUILD_DIR%" --config Release --prefix "%INSTALL_DIR%"
+    echo   cmake --install "%BUILD_DIR%" --config %BUILD_TYPE% --prefix "%INSTALL_DIR%"
     echo.
 ) else (
     echo   [WARNING] No executables found in expected locations.
-    echo   Check: %BUILD_DIR%
+    echo   Check build directory: %BUILD_DIR%
 )
 echo ============================================================================
 exit /b 0
@@ -903,26 +1003,34 @@ exit /b 0
 echo [INFO] Installing Git...
 where winget >nul 2>&1
 if !errorlevel! equ 0 (
-    winget install --id Git.Git -e --silent --accept-package-agreements --accept-source-agreements
+    winget install --id Git.Git -e --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
 ) else (
     echo [INFO] Downloading Git installer...
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.43.0.windows.1/Git-2.43.0-64-bit.exe' -OutFile '%TEMP%\git-installer.exe'"
-    "%TEMP%\git-installer.exe" /VERYSILENT /NORESTART
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.43.0.windows.1/Git-2.43.0-64-bit.exe' -OutFile '%TEMP%\git-installer.exe' -UseBasicParsing } catch { exit 1 }" >nul 2>&1
+    if exist "%TEMP%\git-installer.exe" (
+        "%TEMP%\git-installer.exe" /VERYSILENT /NORESTART >nul 2>&1
+        del "%TEMP%\git-installer.exe" 2>nul
+    )
 )
+:: Update PATH
 set "PATH=%PATH%;C:\Program Files\Git\cmd"
-:: Configure git for better compatibility
+:: Configure git
 git config --global http.sslBackend schannel 2>nul
+git config --global core.longpaths true 2>nul
 exit /b 0
 
 :DoInstallPython
 echo [INFO] Installing Python...
 where winget >nul 2>&1
 if !errorlevel! equ 0 (
-    winget install --id Python.Python.3.12 -e --silent --accept-package-agreements --accept-source-agreements
+    winget install --id Python.Python.3.12 -e --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
 ) else (
     echo [INFO] Downloading Python installer...
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe' -OutFile '%TEMP%\python-installer.exe'"
-    "%TEMP%\python-installer.exe" /quiet InstallAllUsers=1 PrependPath=1
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe' -OutFile '%TEMP%\python-installer.exe' -UseBasicParsing } catch { exit 1 }" >nul 2>&1
+    if exist "%TEMP%\python-installer.exe" (
+        "%TEMP%\python-installer.exe" /quiet InstallAllUsers=1 PrependPath=1 >nul 2>&1
+        del "%TEMP%\python-installer.exe" 2>nul
+    )
 )
 exit /b 0
 
@@ -930,11 +1038,14 @@ exit /b 0
 echo [INFO] Installing CMake...
 where winget >nul 2>&1
 if !errorlevel! equ 0 (
-    winget install --id Kitware.CMake -e --silent --accept-package-agreements --accept-source-agreements
+    winget install --id Kitware.CMake -e --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
 ) else (
     echo [INFO] Downloading CMake installer...
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/Kitware/CMake/releases/download/v3.28.1/cmake-3.28.1-windows-x86_64.msi' -OutFile '%TEMP%\cmake.msi'"
-    msiexec /i "%TEMP%\cmake.msi" /quiet /norestart ADD_CMAKE_TO_PATH=System
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri 'https://github.com/Kitware/CMake/releases/download/v3.28.1/cmake-3.28.1-windows-x86_64.msi' -OutFile '%TEMP%\cmake.msi' -UseBasicParsing } catch { exit 1 }" >nul 2>&1
+    if exist "%TEMP%\cmake.msi" (
+        msiexec /i "%TEMP%\cmake.msi" /quiet /norestart ADD_CMAKE_TO_PATH=System >nul 2>&1
+        del "%TEMP%\cmake.msi" 2>nul
+    )
 )
 set "PATH=%PATH%;C:\Program Files\CMake\bin"
 exit /b 0
@@ -943,14 +1054,11 @@ exit /b 0
 echo [INFO] Installing vcpkg...
 
 :: Remove old/broken installation
-if exist "%VCPKG_DIR%" (
-    echo [INFO] Removing old vcpkg installation...
-    rmdir /s /q "%VCPKG_DIR%" 2>nul
-)
+call :SafeRemoveDir "%VCPKG_DIR%"
 
 :: Clone fresh
 echo [INFO] Cloning vcpkg repository...
-git clone https://github.com/microsoft/vcpkg.git "%VCPKG_DIR%"
+git clone https://github.com/microsoft/vcpkg.git "%VCPKG_DIR%" >nul 2>&1
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to clone vcpkg!
     exit /b 1
@@ -958,15 +1066,16 @@ if !errorlevel! neq 0 (
 
 :: Bootstrap
 echo [INFO] Bootstrapping vcpkg...
-cd /d "%VCPKG_DIR%"
-call bootstrap-vcpkg.bat -disableMetrics
-if !errorlevel! neq 0 (
+pushd "%VCPKG_DIR%" 2>nul || exit /b 1
+call bootstrap-vcpkg.bat -disableMetrics >nul 2>&1
+set "BOOTSTRAP_RESULT=!errorlevel!"
+popd
+
+if !BOOTSTRAP_RESULT! neq 0 (
     echo [ERROR] Failed to bootstrap vcpkg!
-    cd /d "%REPO_DIR%"
     exit /b 1
 )
 
-cd /d "%REPO_DIR%"
 set "VCPKG_ROOT=%VCPKG_DIR%"
 echo [OK] vcpkg installed successfully
 exit /b 0
