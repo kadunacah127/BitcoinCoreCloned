@@ -634,6 +634,9 @@ if defined VS_PATH (
 
 set "VCPKG_ROOT=%VCPKG_DIR%"
 
+:: Change back to source directory after loading VS environment
+cd /d "%REPO_DIR%"
+
 :: Step 3: Verify source
 echo.
 echo [STEP 3/6] Verifying source code...
@@ -657,6 +660,10 @@ echo         [OK] Source code verified
 echo.
 echo [STEP 4/6] Configuring build (may take 15-45 min first time)...
 
+:: IMPORTANT: Change to source directory
+cd /d "%REPO_DIR%"
+echo         Source dir: %CD%
+
 if "%CLEAN_BUILD%"=="1" (
     if exist "%BUILD_DIR%" (
         echo         Cleaning previous build...
@@ -669,7 +676,7 @@ if not exist "%VCPKG_BUILDTREES%" mkdir "%VCPKG_BUILDTREES%" 2>nul
 echo         Generator: %REQUIRED_VS_GENERATOR%
 echo.
 
-cmake -B "%BUILD_DIR%" -G "%REQUIRED_VS_GENERATOR%" -A x64 ^
+cmake -S "%REPO_DIR%" -B "%BUILD_DIR%" -G "%REQUIRED_VS_GENERATOR%" -A x64 ^
     -DCMAKE_TOOLCHAIN_FILE="%VCPKG_DIR%\scripts\buildsystems\vcpkg.cmake" ^
     -DVCPKG_TARGET_TRIPLET="x64-windows-static" ^
     -DVCPKG_INSTALL_OPTIONS="--x-buildtrees-root=%VCPKG_BUILDTREES%;--clean-after-build" ^
