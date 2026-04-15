@@ -1,0 +1,201 @@
+================================================================================
+        BITCOIN CORE WINDOWS BUILD USING GOOGLE COLAB (FIXED v2)
+================================================================================
+
+STEP 1: Go to https://colab.research.google.com and create a New Notebook
+
+STEP 2: Copy each cell below into separate Colab cells and run in order
+
+================================================================================
+CELL 1: Install Dependencies (~3 minutes)
+================================================================================
+
+!apt-get update
+!apt-get install -y build-essential libtool autotools-dev automake pkg-config bsdmainutils curl git cmake make g++-mingw-w64-x86-64-posix mingw-w64
+
+!update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix 2>/dev/null || true
+!update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix 2>/dev/null || true
+
+print("✓ Dependencies installed")
+
+
+================================================================================
+CELL 2: Clone Repository and Fix Permissions (~2 minutes)
+================================================================================
+
+%cd /content
+
+# Remove old clone if exists
+!rm -rf bitcoin
+
+# Clone the repository
+!git clone https://github.com/kadunacah127/BitcoinCoreCloned.git bitcoin
+
+%cd /content/bitcoin
+
+# IMPORTANT: Fix all permissions
+!find . -name "*.sh" -exec chmod +x {} \;
+!find . -name "config.guess" -exec chmod +x {} \;
+!find . -name "config.sub" -exec chmod +x {} \;
+!find . -name "configure" -exec chmod +x {} \;
+!find . -name "gen_id" -exec chmod +x {} \;
+!find . -type f -name "*.py" -exec chmod +x {} \;
+!chmod -R +x depends/
+!chmod -R +x contrib/
+!chmod -R +x test/
+
+# Verify
+!ls -la
+print("✓ Repository cloned and permissions fixed")
+
+
+================================================================================
+CELL 3: Build Dependencies for Windows (~60-90 minutes)
+================================================================================
+
+%cd /content/bitcoin/depends
+
+# Make sure all scripts are executable
+!chmod +x config.guess config.sub 2>/dev/null || true
+!find . -type f \( -name "*.sh" -o -name "config.*" -o -name "configure" \) -exec chmod +x {} \; 2>/dev/null
+
+# Build dependencies for Windows (no GUI for faster build)
+!make HOST=x86_64-w64-mingw32 NO_QT=1 NO_QR=1 NO_ZMQ=1 NO_USDT=1 -j$(nproc)
+
+# Verify toolchain was created
+!ls -la x86_64-w64-mingw32/
+
+print("✓ Dependencies built")
+
+
+================================================================================
+CELL 4: Configure Bitcoin Core (~5 minutes)
+================================================================================
+
+%cd /content/bitcoin
+
+# Verify toolchain exists
+!test -f depends/x86_64-w64-mingw32/toolchain.cmake && echo "✓ Toolchain found" || echo "✗ Toolchain missing"
+
+# Configure
+!cmake -B build --toolchain depends/x86_64-w64-mingw32/toolchain.cmake \
+    -DBUILD_GUI=OFF \
+    -DBUILD_TESTS=OFF \
+    -DBUILD_BENCH=OFF \
+    -DWITH_ZMQ=OFF \
+    -DENABLE_WALLET=ON
+
+print("✓ Configuration complete")
+
+
+================================================================================
+CELL 5: Build Bitcoin Core (~30-45 minutes)
+================================================================================
+
+%cd /content/bitcoin
+
+!cmake --build build -j$(nproc)
+
+# List built executables
+!echo "Built executables:"
+!find build -name "*.exe" -type f
+
+print("✓ Build complete")
+
+
+================================================================================
+CELL 6: Download Executables
+================================================================================
+
+import os
+from google.colab import files
+
+%cd /content/bitcoin
+
+# Create output folder
+!mkdir -p /content/bitcoin_exe
+
+# Copy all exe files
+!find build -name "*.exe" -exec cp {} /content/bitcoin_exe/ \;
+
+# Show what was built
+!echo "Files ready for download:"
+!ls -la /content/bitcoin_exe/
+
+# Create zip
+!cd /content && zip -r bitcoin_core_windows.zip bitcoin_exe/
+
+# Download
+files.download('/content/bitcoin_core_windows.zip')
+
+print("✓ Download started")
+
+
+================================================================================
+                        TROUBLESHOOTING
+================================================================================
+
+If Cell 3 fails with "No rule to make target":
+  - Run Cell 2 again to re-clone with fresh permissions
+  - Then run Cell 3 again
+
+If Cell 4 fails with "toolchain not found":
+  - Cell 3 did not complete successfully
+  - Check Cell 3 output for errors
+  - Re-run Cell 3
+
+If download doesn't start:
+  - Click the folder icon on the left sidebar
+  - Navigate to bitcoin_core_windows.zip
+  - Right-click > Download
+
+================================================================================
+                    ALTERNATIVE: ALL-IN-ONE CELL
+================================================================================
+
+If you prefer one single cell, copy this entire block:
+
+--------------------------------------------------------------------------------
+
+# Bitcoin Core Windows Build - Complete (2-3 hours total)
+# Run this single cell and wait
+
+print("Step 1/6: Installing dependencies...")
+!apt-get update -qq
+!apt-get install -y -qq build-essential libtool autotools-dev automake pkg-config bsdmainutils curl git cmake make g++-mingw-w64-x86-64-posix mingw-w64
+!update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix 2>/dev/null || true
+
+print("Step 2/6: Cloning repository...")
+%cd /content
+!rm -rf bitcoin
+!git clone --depth 1 https://github.com/kadunacah127/BitcoinCoreCloned.git bitcoin
+%cd /content/bitcoin
+
+print("Step 3/6: Fixing permissions...")
+!find . -type f \( -name "*.sh" -o -name "config.*" -o -name "configure" -o -name "gen_id" \) -exec chmod +x {} \; 2>/dev/null
+!chmod -R +x depends/ contrib/ 2>/dev/null
+
+print("Step 4/6: Building dependencies (60-90 min)...")
+%cd /content/bitcoin/depends
+!make HOST=x86_64-w64-mingw32 NO_QT=1 NO_QR=1 NO_ZMQ=1 NO_USDT=1 -j$(nproc)
+
+print("Step 5/6: Configuring and building (30-45 min)...")
+%cd /content/bitcoin
+!cmake -B build --toolchain depends/x86_64-w64-mingw32/toolchain.cmake -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF -DWITH_ZMQ=OFF -DENABLE_WALLET=ON
+!cmake --build build -j$(nproc)
+
+print("Step 6/6: Packaging...")
+!mkdir -p /content/bitcoin_exe
+!find build -name "*.exe" -exec cp {} /content/bitcoin_exe/ \;
+!ls -la /content/bitcoin_exe/
+!cd /content && zip -r bitcoin_core_windows.zip bitcoin_exe/
+
+from google.colab import files
+files.download('/content/bitcoin_core_windows.zip')
+print("✓ BUILD COMPLETE - Download should start automatically")
+
+--------------------------------------------------------------------------------
+
+================================================================================
+                              END OF GUIDE
+================================================================================
